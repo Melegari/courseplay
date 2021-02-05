@@ -178,7 +178,7 @@ function ShovelModeAIDriver:drive(dt)
 		if self:setShovelToPositionFinshed(2,dt) then
 			--initialize first target point
 			if self.bunkerSiloManager == nil then 
-				local silo,isHeap = BunkerSiloManagerUtil.getTargetBunkerSilo(self.vehicle,nil,true)
+				local silo,isHeap = self:getTargetBunkerSilo()
 				if silo then 
 					self.bunkerSiloManager =  BunkerSiloManager(self.vehicle, silo, self:getWorkWidth(),self.shovel.rootNode,isHeap)
 				end
@@ -453,9 +453,9 @@ function ShovelModeAIDriver:getDriveStartUnloadRefSpeed()
 	return self.vehicle.cp.speeds.turn
 end
 
---check for enough free space to start unloading
+---Check if the current dischargeObject has enough free space
 ---@param dischargeNode dischargeNode of the shovel
----@return boolean has enough free space
+---@return boolean object has enough free space, freeSpace > self:getMinNeededFreeCapacity()
 function ShovelModeAIDriver:hasEnoughSpaceInObject(dischargeNode)
 	local fillType = self.shovel:getDischargeFillType(dischargeNode)
 	local object = dischargeNode.dischargeObject
@@ -469,9 +469,10 @@ function ShovelModeAIDriver:hasEnoughSpaceInObject(dischargeNode)
 	end
 end
 
---check if no more free space here
+---Check if the current dischargeObject is almost full ?
 ---@param dischargeNode dischargeNode of the shovel
----@return boolean not enough free space left
+---@return boolean object is almost full, free capacity < 300*1/self.shovel:getDischargeNodeEmptyFactor()
+---		   the factor is used to compensate for shovels that unload to fast 
 function ShovelModeAIDriver:almostFullObject(dischargeNode)
 	local fillType = self.shovel:getDischargeFillType(dischargeNode)
 	local object = dischargeNode.dischargeObject
@@ -540,8 +541,9 @@ function ShovelModeAIDriver:getIsShovelEmpty()
 end
 
 
--- get the minimum required free space
----@return boolean min needed free space
+---Get the minimum required free space to start unloading,
+---so we are not constantly starting to unload and the stop again directly
+---@return float minimum required free space, shovel min(capacity/5,fillLevel)
 function ShovelModeAIDriver:getMinNeededFreeCapacity()
 	return math.min(self.shovel:getFillUnitCapacity(1)/5,self.shovel:getFillUnitFillLevel(1))
 end
@@ -662,8 +664,8 @@ function ShovelModeAIDriver:onWaypointPassed(ix)
 	end
 end
 
--- are all the shovel positions correctly set ?
----@return boolean are shovel positions okay
+---Check if all shovel positions are set correctly
+---@return boolean are all shovel positions valid ?
 function ShovelModeAIDriver:checkShovelPositionsValid()
 	local validToolPositions = self.vehicle.cp.settings.frontloaderToolPositions:hasValidToolPositions()
 	if not validToolPositions then 
@@ -672,8 +674,8 @@ function ShovelModeAIDriver:checkShovelPositionsValid()
 	return validToolPositions
 end
 
--- are all 3 needed waitpoint correctly setup ?
----@return boolean has necessary waitpoints 
+---Check if all wait points are set correctly
+---@return boolean are all wait points valid ?
 function ShovelModeAIDriver:checkWaypointsValid()
 	if self.shovelFillStartPoint == nil or self.shovelFillEndPoint == nil or self.shovelEmptyPoint == nil then
 		courseplay:setInfoText(self.vehicle, 'COURSEPLAY_NO_VALID_COURSE');
@@ -813,4 +815,11 @@ end
 
 function ShovelModeAIDriver:isProximitySpeedControlEnabled()
 	return self.shovelState.properties.enableProximitySpeedControl
+end
+
+---Checks for bunker silo or heaps in between shovelFillStartPoint and shovelFillEndPoint
+---@return table bunker silo or simulated heap silo
+---@return boolean is the found silo a heap ?
+function ShovelModeAIDriver:getTargetBunkerSilo()
+	return BunkerSiloManagerUtil.getTargetBunkerSiloBetweenWaypoints(self.vehicle,self.course,self.shovelFillStartPoint,self.shovelFillEndPoint,true)
 end

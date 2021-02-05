@@ -33,7 +33,6 @@ widthNode -->	|				|	<-- startNode (sx,_,sz)
 ---@param node targetNode is either the front/back node of the implement used to check if the bestTarget was passed
 ---@param boolean is the silo a heap ?
 function BunkerSiloManager:init(vehicle, Silo, width, targetNode,isHeap)
-	print("BunkerSiloManager: init()")
 	self.siloMap = self:createBunkerSiloMap(vehicle, Silo, width,isHeap)
 	self.silo = Silo
 	self.vehicle = vehicle
@@ -229,7 +228,7 @@ function BunkerSiloManager:setOffsetsPerWayPoint(course,bestColumn,ix)
 	local points =	{}
 	local foundFirst = 0
 	for index=ix,course:getNumberOfWaypoints() do
-		if BunkerSiloManagerUtil.getTargetBunkerSiloByPointOnCourse(course,index)~= nil then
+		if BunkerSiloManagerUtil.getTargetBunkerSiloAtWaypoint(self.vehicle,course,index)~= nil then
 			local closest,cx,cz = 0,0,0
 			local leastDistance = math.huge
 			for lineIndex=1,#self.siloMap do
@@ -258,6 +257,30 @@ function BunkerSiloManager:setOffsetsPerWayPoint(course,bestColumn,ix)
 
 	return foundFirst
 end
+
+---Gets the closest bunker silo map line form a given column to a waypoint ix
+---@param course course of the driver
+---@param int waypoint ix to get the distance from
+---@param int target column of the bunker silo map
+---@return float dx,dy,dz closest silo map part position
+function BunkerSiloManager:getClosestSiloPartPositionToWaypoint(course,ix,targetColumn)
+	local closestLine,dx,dz = 0,0,0
+	local leastDistance = math.huge
+	for lineIndex=1,#self.siloMap do
+		local fillUnit= self.siloMap[lineIndex][targetColumn]
+		--get the middle of the silo part
+		local x,z = fillUnit.bx,fillUnit.bz
+		local distance = course:getDistanceBetweenPointAndWaypoint(x,z, ix)
+		if leastDistance > distance then
+			leastDistance = distance
+			closestLine = lineIndex
+			dx,dz = x,z
+		end
+	end
+	local dy = getTerrainHeightAtWorldPos(g_currentMission.terrainRootNode, dx, 1, dz);
+	return dx,dy,dz
+end
+
 
 ---have we reached the end ?
 ---@param siloMapPart bestTarget targeted part
@@ -351,9 +374,10 @@ function BunkerSiloManager:updateTarget(bestTarget)
 end
 
 ---drawing the routing of the driver 
----@param siloMapPart bestTarget targeted part
----@param tempTarget for driving out of the silo
-function BunkerSiloManager:debugRouting(bestTarget,tempTarget)
+---@param table bestTarget targeted part
+---@param table for driving out of the silo
+---@param float target shield height of mode 10 driver
+function BunkerSiloManager:debugRouting(bestTarget,tempTarget,targetHeight)
 	if self.siloMap ~= nil and bestTarget ~= nil then
 
 		local fillUnit = self.siloMap[bestTarget.line][bestTarget.column]
@@ -389,6 +413,16 @@ function BunkerSiloManager:debugRouting(bestTarget,tempTarget)
 			cpDebug:drawLine(tx, y, tz, 1, 0, 1, sx, y, sz);
 			cpDebug:drawPoint(tx, y, tz, 1, 1 , 1);
 		end
+		if targetHeight then 
+			local column = bestTarget.column
+			local firstFillUnit = self.siloMap[1][column]
+			local secondFillUnit = self.siloMap[#self.siloMap][column]
+			local x,z = firstFillUnit.bx, firstFillUnit.bz
+			local terrainHeight = getTerrainHeightAtWorldPos(g_currentMission.terrainRootNode, x,1,z)
+			local height = terrainHeight + targetHeight
+			local nx,nz = secondFillUnit.bx, secondFillUnit.bz
+			cpDebug:drawLine(x, height, z, 1, 1, 1, nx, height, nz);
+		end
 	end
 end
 
@@ -422,49 +456,32 @@ end
 
 BunkerSiloManagerUtil = {}
 
----get the closest bunkerSilo or heap
+---Checks for bunkerSilos between two points
 ---@param vehicle vehicle of the driver
----@param int forces search around waypointIndex=forcedPoint
----@param boolean is using Heaps allowed, for example mode 9
----@return targetSilo either the found BunkerSilo or
---		   a simulated silo by BunkerSiloManagerUtil.getHeapsMinMaxCoords() for Heaps
----@return boolean have we found a heap ?
-function BunkerSiloManagerUtil.getTargetBunkerSilo(vehicle,forcedPoint,checkForHeapsActive)
-	local pointIndex = 0
-	if forcedPoint then
-		 pointIndex = forcedPoint;
-	else
-		pointIndex = vehicle.cp.driver.shovelFillStartPoint+2
-	end
-	local x,z = vehicle.Waypoints[pointIndex].cx,vehicle.Waypoints[pointIndex].cz			
-	local tx,tz = x,z + 0.50
-	local p1x,p1z,p2x,p2z,p1y,p2y = 0,0,0,0,0,0
+---@param int x,z fist point
+---@param int tx,tz second point
+---return BunkerSilo  
+function BunkerSiloManagerUtil.getBunkerSilo(vehicle,x,z,tx,tz)
 	if g_currentMission.bunkerSilos ~= nil then
 		for _, bunker in pairs(g_currentMission.bunkerSilos) do
 			local x1,z1 = bunker.bunkerSiloArea.sx,bunker.bunkerSiloArea.sz
 			local x2,z2 = bunker.bunkerSiloArea.wx,bunker.bunkerSiloArea.wz
 			local x3,z3 = bunker.bunkerSiloArea.hx,bunker.bunkerSiloArea.hz
-			bunker.type = "silo"
 			if MathUtil.hasRectangleLineIntersection2D(x1,z1,x2-x1,z2-z1,x3-x1,z3-z1,x,z,tx-x,tz-z) then
+				courseplay.debugVehicle(10, vehicle, "Silo was found: %s",nameNum(bunker))
 				return bunker
 			end
 		end
 	end
-	--it's not a bunkersSilo, try to find a heap if it is allowed
-	if checkForHeapsActive then
-		return BunkerSiloManagerUtil.getHeapCoords(vehicle),true
-	end
 end
 
-
----check for heaps and simulate a bunkerSiloMap for the found heap
+---Checks for heaps between two points
 ---@param vehicle vehicle of the driver
+---@param int x,z first point
+---@param int nx,nz second point
 ---return targetSilo a simulated bunkerSilo version of the heap
-function BunkerSiloManagerUtil.getHeapCoords(vehicle)
-	local p1x,p1z,p2x,p2z,p1y,p2y = 0,0,0,0,0,0
-
-	p1x,p1z = vehicle.Waypoints[vehicle.cp.driver.shovelFillStartPoint].cx,vehicle.Waypoints[vehicle.cp.driver.shovelFillStartPoint].cz;
-	p2x,p2z = vehicle.Waypoints[vehicle.cp.driver.shovelFillEndPoint].cx,vehicle.Waypoints[vehicle.cp.driver.shovelFillEndPoint].cz;
+function BunkerSiloManagerUtil.getHeapCoords(vehicle,x,z,nx,nz)
+	local p1x,p1z,p2x,p2z,p1y,p2y = x,z,nx,nz,0,0
 	p1y = getTerrainHeightAtWorldPos(g_currentMission.terrainRootNode, p1x, 1, p1z);
 	p2y = getTerrainHeightAtWorldPos(g_currentMission.terrainRootNode, p2x, 1, p2z);
 	local heapFillType = DensityMapHeightUtil.getFillTypeAtLine(p1x, p1y, p1z, p2x, p2y, p2z, 5)
@@ -472,7 +489,7 @@ function BunkerSiloManagerUtil.getHeapCoords(vehicle)
 	if not heapFillType or heapFillType == FillType.UNKNOWN then 
 		return 
 	end
-	courseplay:debug(string.format("%s: heap with %s found",nameNum(vehicle),tostring(heapFillType)),10)
+	courseplay.debugVehicle(10, vehicle, "Heap with %s was found",tostring(heapFillType))
 	--create temp node 
 	local point = createTransformGroup("cpTempHeapFindingPoint");
 	link(g_currentMission.terrainRootNode, point);
@@ -484,10 +501,6 @@ function BunkerSiloManagerUtil.getHeapCoords(vehicle)
 	local yRot = MathUtil.getYRotationFromDirection(dx, dz);
 	setRotation(point, 0, yRot, 0);
 
-	--debug line vor search area to be sure, the point is set correctly
-	vehicle.cp.tempMOde9PointX,vehicle.cp.tempMOde9PointY,vehicle.cp.tempMOde9PointZ = getWorldTranslation(point)
-	vehicle.cp.tempMOde9PointX2,vehicle.cp.tempMOde9PointY2,vehicle.cp.tempMOde9PointZ2 = localToWorld(point,0,0,distance*2)
-	
 	-- move the line to find out the size of the heap
 	
 	--find maxX 
@@ -502,7 +515,7 @@ function BunkerSiloManagerUtil.getHeapCoords(vehicle)
 		--print(string.format("fillType:%s distance: %.1f",tostring(fillType),i))	
 		if fillType ~= heapFillType then
 			maxX = i-stepSize
-			courseplay:debug("maxX= "..tostring(maxX),10)
+			courseplay.debugVehicle(10, vehicle, "maxX = %.2f",maxX)
 			break
 		end
 	end
@@ -517,7 +530,7 @@ function BunkerSiloManagerUtil.getHeapCoords(vehicle)
 		--print(string.format("fillType:%s distance: %.1f",tostring(fillType),i))	
 		if fillType ~= heapFillType then
 			minX = i-stepSize
-			courseplay:debug("minX= "..tostring(minX),10)
+			courseplay.debugVehicle(10, vehicle, "minX = %.2f",minX)
 			break
 		end
 	end
@@ -533,12 +546,12 @@ function BunkerSiloManagerUtil.getHeapCoords(vehicle)
 			if fillType == heapFillType then
 				foundHeap = true
 				minZ = i-stepSize
-				courseplay:debug("minZ= "..tostring(minZ),10)
+				courseplay.debugVehicle(10, vehicle, "minZ = %.2f",minZ)
 			end
 		else
 			if fillType ~= heapFillType then
 				maxZ = i-stepSize+1
-				courseplay:debug("maxZ= "..tostring(maxZ),10)
+				courseplay.debugVehicle(10, vehicle, "maxZ = %.2f",maxZ)
 				break
 			end
 		end	
@@ -550,36 +563,69 @@ function BunkerSiloManagerUtil.getHeapCoords(vehicle)
 	bunker.bunkerSiloArea.sx,_,bunker.bunkerSiloArea.sz = localToWorld(point,maxX,0,minZ);
 	bunker.bunkerSiloArea.wx,_,bunker.bunkerSiloArea.wz = localToWorld(point,-minX,0,minZ)
 	bunker.bunkerSiloArea.hx,_,bunker.bunkerSiloArea.hz = localToWorld(point,maxX,0,maxZ)
-	bunker.type = "heap"
-
 		
 	-- Clean up the temporary node.
 	unlink(point);
 	delete(point);
-	
-	
+
 	return bunker
 end
 
----get the best column to fill
----@param course course of the driver
----@param int waypointIndex to find the next closest bunkersilo or default is 1
----@return int best column to fill
-function BunkerSiloManagerUtil.getTargetBunkerSiloByPointOnCourse(course,forcedPoint)
-	local pointIndex = forcedPoint or 1 ;
-	local x,_,z =  course:getWaypointPosition(pointIndex)
-	local tx,tz = x,z + 0.50
-	local p1x,p1z,p2x,p2z,p1y,p2y = 0,0,0,0,0,0
-	if g_currentMission.bunkerSilos ~= nil then
-		for _, bunker in pairs(g_currentMission.bunkerSilos) do
-			local x1,z1 = bunker.bunkerSiloArea.sx,bunker.bunkerSiloArea.sz
-			local x2,z2 = bunker.bunkerSiloArea.wx,bunker.bunkerSiloArea.wz
-			local x3,z3 = bunker.bunkerSiloArea.hx,bunker.bunkerSiloArea.hz
-			bunker.type = "silo"
-			if MathUtil.hasRectangleLineIntersection2D(x1,z1,x2-x1,z2-z1,x3-x1,z3-z1,x,z,tx-x,tz-z) then
-				return bunker
-			end
-		end
+---Checks if there is a bunker silo in between two waypoints,
+---if a bunker was found the return it
+---@param vehicle vehicle of the driver
+---@param table course of the driver
+---@param int first waypoint ix
+---@param int last waypoint ix
+---@param boolean looking for heaps allowed ?
+---@return table bunker silo or simulated heap silo
+---@return boolean was a heap found ?
+function BunkerSiloManagerUtil.getTargetBunkerSiloBetweenWaypoints(vehicle,course,firstWpIx,lastWpIx,checkForHeapsActive)
+	local x,_,z = course:getWaypointPosition(firstWpIx)
+	local nx,_,nz = course:getWaypointPosition(lastWpIx)
+
+	local silo = BunkerSiloManagerUtil.getBunkerSilo(vehicle,x,z,nx,nz)
+	if silo then 
+		return silo
+	end
+	--it's not a bunkersSilo, try to find a heap if it is allowed
+	if checkForHeapsActive then
+		return BunkerSiloManagerUtil.getHeapCoords(vehicle,x,z,nx,nz),true
 	end
 end
 
+---Checks if the waypoint is in a bunker silo, 
+---if a bunker was found the return it
+---@param vehicle vehicle of the driver
+---@param table course of the driver
+---@param int waypoint ix to look for a silo
+---@return table bunker silo 
+function BunkerSiloManagerUtil.getTargetBunkerSiloAtWaypoint(vehicle,course,wpIx)
+	local x,_,z = course:getWaypointPosition(wpIx)
+	local nx,nz = x,z + 0.50
+	return BunkerSiloManagerUtil.getBunkerSilo(vehicle,x,z,nx,nz)
+end
+
+---Gets the first waypoint in the silo and the last waypoint
+---@param vehicle vehicle of the driver
+---@param course course of the driver
+---@param int first waypoint to start checking from
+---@return int first waypointIx in silo
+---@return int last waypointIx in silo
+function BunkerSiloManagerUtil.getFirstAndLastWaypointIxInSilo(vehicle,course,startIx)
+	local firstIx, lastIx
+	for ix=startIx,course:getNumberOfWaypoints() do 
+		local x,_,z = course:getWaypointPosition(ix)
+		local nextIx = math.min(ix,course:getNumberOfWaypoints())
+		local nx,_,nz = course:getWaypointPosition(nextIx)
+		if BunkerSiloManagerUtil.getBunkerSilo(vehicle,x,z,nx,nz) then 
+			if not firstIx then 
+				firstIx = ix
+			end
+			lastIx = ix
+		elseif foundFirst then 
+			break
+		end
+	end
+	return firstIx,lastIx
+end
