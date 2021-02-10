@@ -886,10 +886,12 @@ function LevelCompactAIDriver:updateShieldHeight()
 			else 
 				spec.heightTargetAlpha =-1
 			end
-			--rotate shield to standing on ground position, should roughly be 90 degree to ground
-		--	local angle = spec.maxTiltAngle
-			jointDesc.upperRotationOffset = jointDesc.upperRotationOffsetBackup 
-			jointDesc.lowerRotationOffset = jointDesc.lowerRotationOffsetBackup 
+			--rotate shield to standing on ground position, should roughly be 90 degree to ground by default
+			--tilt the shield relative to the additional shield height offset
+			--added a factor of 3 to make sure the shield is getting tilted enough
+			local targetAngle = math.min(spec.maxTiltAngle*self.shieldHeightOffset*3,spec.maxTiltAngle)
+			jointDesc.upperRotationOffset = jointDesc.upperRotationOffsetBackup - targetAngle
+			jointDesc.lowerRotationOffset = jointDesc.lowerRotationOffsetBackup - targetAngle
 
 		else 
 			self.shieldHeightOffset = 0
